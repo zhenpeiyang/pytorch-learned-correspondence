@@ -9,7 +9,7 @@ pip install tensorboardX
 ```
 
 ## Usage
-- prepare the dataset using script from original [repo](https://github.com/vcg-uvic/learned-correspondence-release)
+- prepare the dataset using script from [original repo](https://github.com/vcg-uvic/learned-correspondence-release)
 ```
 python train.py --exp myexp --resume
 ```
