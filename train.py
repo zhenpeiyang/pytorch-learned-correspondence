@@ -1,30 +1,29 @@
-import numpy as np
+
 import os
+import re
+import time
+import glob
 import torch
+import parse
+import helper
+import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from utils import routines
-from utils.routines import v, npy, timer
 from utils import log
+from utils.routines import v, npy, timer
 from tensorboardX import SummaryWriter
-import cv2
-import helper
-import time
-import re
-import glob
 from utils.dotdict import *
-from utils.factory import trainer
 from archs.cvpr2018 import Net
-from utils.callbacks import PeriodicCallback,CallbackLoc
-import copy
 from tests import test_process
+from utils.factory import trainer
+from utils.callbacks import PeriodicCallback,CallbackLoc
 from helper import torch_skew_symmetric
 from config import get_config, print_usage
 from termcolor import colored, cprint
 from progress.bar import Bar
-import parse
 
 def get_dataset(config):
   def worker_init_fn(worker_id):                                                          
