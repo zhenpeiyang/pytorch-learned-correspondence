@@ -1,4 +1,4 @@
-# <img src="./utils/logo.svg" alt="alt text" width="100" height="25">  Pytorch(v1.0) Implementation of "Learning to Find Good Correspondences (CVPR 2018)" 
+# <img src="./utils/logo.svg" alt="alt text" width="50" height="50">  Pytorch(v1.0) Implementation of "Learning to Find Good Correspondences (CVPR 2018)" 
 
 
 (in progress...)
