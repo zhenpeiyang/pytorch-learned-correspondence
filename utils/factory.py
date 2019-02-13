@@ -7,22 +7,20 @@ from .dotdict import *
 
 
 class trainer(object):
-  def __init__(self, model,train_loader=None,
-              val_loader=None,max_epoch=1000):
+  def __init__(self, model, train_loader=None,
+               val_loader=None, max_epoch=1000):
     # callbacks types
     self._periodic_callbacks = None
     self._once_callbacks = None
     self._scheduled_callbacks = None
     self.max_epoch=max_epoch
     self.model = model
-    self.train_loader=train_loader
+    self.train_loader = train_loader
     self.val_loader=val_loader
-    self.callbacks=[]
-    self.context={}
+    self.callbacks = []
+    self.context = {}
     self.step = 0
     self.epoch = self.model.epoch_on_start
-    self.trainTimer     = 0
-    self.testTimer      = 0
 
   def add_callbacks(self, callbacks):
     """Add callbacks.
@@ -52,10 +50,6 @@ class trainer(object):
         self._once_callbacks.append(cb)
       if _check_type(ScheduledCallback, cb):
         self._scheduled_callbacks.append(cb)
-  
-    
-  def timeElaps(self,start):
-    return (time.time() - start)/60
 
   def run(self):
     """Start training with callbacks.
@@ -95,7 +89,7 @@ class trainer(object):
         self.epoch += 1
 
     except (KeyboardInterrupt, SystemExit):
-      logger.info("Training is stoped.")
+      print("Training is stoped.")
     except:
       raise
     finally:
