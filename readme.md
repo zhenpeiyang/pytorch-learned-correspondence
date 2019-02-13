@@ -1,4 +1,4 @@
-# Pytorch(v1.0) implementation of "Learning to Find Good Correspondences (CVPR 2018)" 
+# <img src="./utils/logo.svg" alt="alt text" width="100" height="25">  Pytorch(v1.0) Implementation of "Learning to Find Good Correspondences (CVPR 2018)" 
 
 
 (in progress...)
@@ -13,6 +13,7 @@ pip install tensorboardX
 ```
 python train.py --exp myexp --resume
 ```
+___
 
 This repository is a reference implementation for K. Yi\*, E. Trulls\*, Y. Ono,
 V. Lepetit, M. Salzmann, and P. Fua, "Learning to Find Good Correspondences",
