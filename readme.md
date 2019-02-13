@@ -1,4 +1,18 @@
-# Pytorch(v1.0) implementation of "Learning to Find Good Correspondences (CVPR 2018)" (in progress...)
+# Pytorch(v1.0) implementation of "Learning to Find Good Correspondences (CVPR 2018)" 
+
+
+(in progress...)
+## install addtional requirements:
+```
+pip install progress
+pip install tensorboardX
+```
+
+## Usage
+- prepare the dataset using script from original [repo](https://github.com/vcg-uvic/learned-correspondence-release)
+```
+python train.py --exp myexp --resume
+```
 
 This repository is a reference implementation for K. Yi\*, E. Trulls\*, Y. Ono,
 V. Lepetit, M. Salzmann, and P. Fua, "Learning to Find Good Correspondences",

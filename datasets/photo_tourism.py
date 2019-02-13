@@ -7,10 +7,11 @@ import glob
 import pickle
 
 class photo_tourism(data.Dataset):
-  def __init__(self, split, config):
+  def __init__(self, split, config, batch_size):
     self.data = self.load_data(config, split)
     self.len = len(self.data['xs'])
-    self.batch_size = config.batch_size
+    self.batch_size = batch_size
+    # self.batch_size = config.batch_size
     
   def load_data(self, config, split):
     print("Loading {} data".format(split))
@@ -77,23 +78,22 @@ class photo_tourism(data.Dataset):
     class Record(object):
         pass
     record = Record()
-    ind_cur = np.random.choice(
-                self.len, self.batch_size, replace=False)
+    ind_cur = [index]
     numkps = np.array([self.data['xs'][_i].shape[1] for _i in ind_cur])
     cur_num_kp = numkps.min()
     # Actual construction of the batch
     xs_b = np.array(
         [self.data['xs'][_i][:, :cur_num_kp, :] for _i in ind_cur]
-    ).reshape(self.batch_size, cur_num_kp, 4).transpose(0,2,1)
+    ).reshape(1, cur_num_kp, 4).transpose(0,2,1)
     ys_b = np.array(
         [self.data['ys'][_i][:cur_num_kp, :] for _i in ind_cur]
-    ).reshape(self.batch_size, cur_num_kp, 2).transpose(0,2,1)
+    ).reshape(1, cur_num_kp, 2).transpose(0,2,1)
     Rs_b = np.array(
         [self.data['Rs'][_i] for _i in ind_cur]
-    ).reshape(self.batch_size, 9)
+    ).reshape(1, 9)
     ts_b = np.array(
         [self.data['ts'][_i] for _i in ind_cur]
-    ).reshape(self.batch_size, 3)
+    ).reshape(1, 3)
     record.xs = xs_b
     record.ys = ys_b
     record.Rs = Rs_b
@@ -102,5 +102,9 @@ class photo_tourism(data.Dataset):
     
   def __len__(self):
     return self.len
+
+    for i in range(14723):
+      m=data_loader.dataset.data['xs'][i].max()
+      if m>5: print(m)                                                                            
 
 

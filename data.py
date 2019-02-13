@@ -42,7 +42,7 @@ import numpy as np
 
 import cv2
 from transformations import quaternion_from_matrix
-from utils import loadh5
+from helper import loadh5
 import scipy.misc
 
 def load_geom(geom_file, geom_type, scale_factor, flip_R=False):

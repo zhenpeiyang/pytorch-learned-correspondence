@@ -6,7 +6,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from utils import routines
-from utils.routines import v, npy
+from utils.routines import v, npy, timer
 from utils import log
 from tensorboardX import SummaryWriter
 import cv2
@@ -23,6 +23,7 @@ from tests import test_process
 from helper import torch_skew_symmetric
 from config import get_config, print_usage
 from termcolor import colored, cprint
+from progress.bar import Bar
 import parse
 
 def get_dataset(config):
@@ -34,28 +35,24 @@ def get_dataset(config):
   else:
     raise Exception("unknown dataset!")
 
-  train_dataset = Dataset('train', config)
-  val_dataset   = Dataset('valid', config)
-  if config.debug:
-    train_loader = DataLoader(train_dataset, batch_size=1, 
-      shuffle=True, drop_last=True, collate_fn=routines.collate_fn_cat, 
-      worker_init_fn=worker_init_fn)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=True,
-      drop_last=True, collate_fn=routines.collate_fn_cat, 
-      worker_init_fn=worker_init_fn)
-  else:
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, 
-      num_workers=config.num_workers, drop_last=True,
-      collate_fn=routines.collate_fn_cat, worker_init_fn=worker_init_fn)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=True, 
-      num_workers=config.num_workers, drop_last=True,
-      collate_fn=routines.collate_fn_cat, worker_init_fn=worker_init_fn)
+  train_dataset = Dataset('train', config, config.batch_size)
+  val_dataset   = Dataset('valid', config, 1)
+  
+  if config.debug: 
+    config.num_workers = 0 
+
+  train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, 
+    num_workers=config.num_workers, drop_last=True,
+    collate_fn=routines.collate_fn_cat, worker_init_fn=worker_init_fn)
+  val_loader = DataLoader(val_dataset, batch_size=1, shuffle=True, 
+    num_workers=config.num_workers, drop_last=True,
+    collate_fn=routines.collate_fn_cat, worker_init_fn=worker_init_fn)
 
   return train_loader,val_loader
 
 
 class learner(object):
-  def __init__(self, config,):
+  def __init__(self, config):
     self.config = config
     self.epoch_on_start = 0
 
@@ -64,7 +61,7 @@ class learner(object):
     self.logger_loss     = log.AverageMeter()
     self.res_dir_va   =  self.config.EXP_DIR + '/valid'
     os.makedirs(self.res_dir_va, exist_ok=True)
-    self.va_res_file = os.path.join(self.res_dir_va, "valid", "va_res.txt")
+    self.va_res_file = os.path.join(self.res_dir_va, "va_res.txt")
     
     self.global_step = 0
     self.speed_benchmark = True
@@ -83,6 +80,12 @@ class learner(object):
     # resume if specified
     self.best_va_res = -1
     if self.config.resume: self.load_checkpoint()
+
+    # timer
+    self.TRAIN_SNIPPET = 15.0
+    self.timer_tr = timer(self.TRAIN_SNIPPET)
+    self.TEST_SNIPPET  = 1.0
+    self.timer_te = timer(self.TEST_SNIPPET)
 
   def set_mode(self,mode='train'):
     if mode == 'train':
@@ -160,188 +163,207 @@ class learner(object):
       print(e)
       print("resume fail")
 
-  def step(self, data, mode = 'train'):
-    torch.cuda.empty_cache()
-    if self.speed_benchmark:
-      step_start=time.time()
-    
-    with torch.set_grad_enabled(mode == 'train'):
-      np.random.seed()
-      self.optimizer.zero_grad()
-      
-      MSEcriterion = torch.nn.MSELoss()
-      BCEcriterion = torch.nn.BCELoss()
-      CEcriterion  = nn.CrossEntropyLoss(reduce=False)
-      
-      x_in, y_in  = v(data.xs),v(data.ys)
-      R_in, t_inv = (data.Rs),v(data.ts)
-      
-      x_shp = x_in.shape
-      
-      logits = self.net(x_in)
-      logits = logits.view(x_shp[0], -1)
-      weights = F.relu(F.tanh(logits))
+  def train(self, data_loader, epoch):
 
-      # Make input data (num_img_pair x num_corr x 4)
-      
-      xx = x_in
-      # Create the matrix to be used for the eight-point algorithm
-      
-      X = torch.transpose(torch.stack([
-          xx[:, 2] * xx[:, 0], xx[:, 2] * xx[:, 1], xx[:, 2],
-          xx[:, 3] * xx[:, 0], xx[:, 3] * xx[:, 1], xx[:, 3],
-          xx[:, 0], xx[:, 1], torch.ones_like(xx[:, 0])
-      ], dim=1), 1, 2)
+    self.set_mode('train')
+    mode = 'train'
 
-      print("X shape = {}".format(X.shape))
-      wX = weights.view(x_shp[0], x_shp[2], 1) * X
-      print("wX shape = {}".format(wX.shape))
-      XwX = torch.matmul(torch.transpose(X, 1, 2), wX)
-      print("XwX shape = {}".format(XwX.shape))
-      
-      
-      # Recover essential matrix from self-adjoing eigen
-      e_hat = []
-      for i in range(x_shp[0]):
-        # e, vv = torch.eig(XwX[i],eigenvectors=True)
-        u, s, vv = torch.svd(XwX[i].cpu())
-        e_hat_this = u[:, -1]
-        # Make unit norm just in case
-        e_hat_this = e_hat_this / torch.norm(e_hat_this)
-        e_hat.append(e_hat_this)
-      
-      e_hat = torch.stack(e_hat).cuda()
-      
-      gt_geod_d = y_in[:, 0, :]
-      # tf.summary.histogram("gt_geod_d", gt_geod_d)
+    self.timer_tr.reset()
+    bar = Bar('Progress', max=len(data_loader))
 
-      # Get groundtruth Essential matrix
-      e_gt_unnorm = torch.matmul(
-          torch_skew_symmetric(t_in).view(x_shp[0], 3, 3),
-          R_in.view(x_shp[0], 3, 3)
-      ).view(x_shp[0], 9)
-      e_gt = e_gt_unnorm / torch.norm(e_gt_unnorm, dim=1, \
-        keepdim=True).detach()
+    for i, data in enumerate(data_loader):
+      if self.timer_tr.should_stop():
+        break
+      data = dotdict(data)
+      torch.cuda.empty_cache()
+      if self.speed_benchmark:
+        step_start=time.time()
       
-      # Essential matrix loss
-      essential_loss = torch.mean(torch.min(
-          torch.sum(torch.pow(e_hat - e_gt, 2), dim=1),
-          torch.sum(torch.pow(e_hat + e_gt, 2), dim=1)
-      ))
-
-      self.tensorboardX.add_scalars('essential_loss', 
-                    {'%s' % (mode):essential_loss}, self.global_step)
-      
-      # Classification loss
-      is_pos = (gt_geod_d < self.config.obj_geod_th).float()
-      
-      is_neg = (gt_geod_d >= self.config.obj_geod_th).float()
-
-      c = is_pos - is_neg
-      classif_losses = -torch.log(F.sigmoid(c * logits))
-
-      # balance
-      num_pos = F.relu(torch.sum(is_pos, dim=1) - 1.0) + 1.0
-      num_neg = F.relu(torch.sum(is_neg, dim=1) - 1.0) + 1.0
-      classif_loss_p = torch.sum(
-          classif_losses * is_pos, dim=1
-      )
-      classif_loss_n = torch.sum(
-          classif_losses * is_neg, dim=1
-      )
-      classif_loss = torch.mean(
-          classif_loss_p * 0.5 / num_pos +
-          classif_loss_n * 0.5 / num_neg
-      )
-      self.tensorboardX.add_scalars('classif_loss', 
-          {'%s' % (mode):classif_loss}, self.global_step)
-      self.tensorboardX.add_scalars('classif_loss_p', 
-          {'%s' % (mode):torch.mean(classif_loss_p * 0.5 / num_pos)}
-          , self.global_step)
-      self.tensorboardX.add_scalars('classif_loss_n', 
-          {'%s' % (mode):torch.mean(classif_loss_n * 0.5 / num_neg)}
-          , self.global_step)
-      
-      precision = torch.mean(
-          torch.sum((logits > 0).float() * is_pos, dim=1) /
-          torch.sum((logits > 0).float() *
-                        (is_pos + is_neg), dim=1)
-      )
-      self.tensorboardX.add_scalars('precision', 
-          {'%s' % (mode):precision}, self.global_step)
-      
-      recall = torch.mean(
-          torch.sum((logits > 0).float() * is_pos, dim=1) /
-          torch.sum(is_pos, dim=1)
-      )
-      self.tensorboardX.add_scalars('recall', 
-          {'%s' % (mode):recall}, self.global_step)
-      
-
-      # Check global_step and add essential loss
-      loss = 0
-      if self.config.loss_essential > 0:
-          loss += (
-              self.config.loss_essential * essential_loss * 
-              (self.global_step >= self.config.loss_essential_init_iter))
-      if self.config.loss_classif > 0:
-          loss += self.config.loss_classif * classif_loss
-      
-      self.tensorboardX.add_scalars('loss', 
-          {'%s' % (mode):loss}, self.global_step)
-
-      
-      if mode == 'train':
-        if not torch.isnan(loss).any():
-          loss.backward()
+      with torch.set_grad_enabled(True):
+        np.random.seed()
+        self.optimizer.zero_grad()
         
-          torch.nn.utils.clip_grad_norm_(self.net.parameters(), 
-                                        self.config.GRAD_CLIP)
-          self.optimizer.step()
-      
-      self.logger_loss.update(loss.data, x_shp[0])
-      
-      suffix = f"| loss {self.logger_loss.avg:.6f}"
-    
-      # ----------------------------------------
-      # Validation
-      if self.global_step % self.config.val_intv == 0: 
-      # if 1:
-        import ipdb;ipdb.set_trace()
-        va_res = 0
-        cur_global_step = self.global_step
-        va_res, summary_t = test_process(self.net,
-            "valid", cur_global_step,
-            x_in, y_in, R_in, t_in,
-            None, None, None,
-            logits, e_hat, loss,
-            data["valid"],
-            self.res_dir_va, self.config, True)
-        for entry in summary_t:
-          self.tensorboardX.add_scalars(entry['tag'], 
-              entry['val'], self.global_step)
-        # Higher the better
-        if va_res > best_va_res:
-          print(
-              "Saving best model with va_res = {}".format(
-                  va_res))
-          best_va_res = va_res
-          # Save best validation result
-          with open(self.va_res_file, "w") as ofp:
-              ofp.write("{:e}\n".format(best_va_res))
-          # Save best model
-          self.saver_best.save(
-              self.sess, self.save_file_best,
-              write_meta_graph=False,
-          )
+        MSEcriterion = torch.nn.MSELoss()
+        BCEcriterion = torch.nn.BCELoss()
+        CEcriterion  = nn.CrossEntropyLoss(reduce=False)
+        
+        x_in, y_in  = v(data.xs),v(data.ys)
+        R_in, t_in  = v(data.Rs),v(data.ts)
+        
+        x_shp = x_in.shape
+        
+        logits = self.net(x_in)
+        logits = logits.view(x_shp[0], -1)
+        weights = F.relu(F.tanh(logits))
 
-      summary = {'suffix':suffix}
-      self.global_step+=1
+        # Make input data (num_img_pair x num_corr x 4)
+        
+        xx = x_in
+        # Create the matrix to be used for the eight-point algorithm
+        
+        X = torch.transpose(torch.stack([
+            xx[:, 2] * xx[:, 0], xx[:, 2] * xx[:, 1], xx[:, 2],
+            xx[:, 3] * xx[:, 0], xx[:, 3] * xx[:, 1], xx[:, 3],
+            xx[:, 0], xx[:, 1], torch.ones_like(xx[:, 0])
+        ], dim=1), 1, 2)
+
+        # print("X shape = {}".format(X.shape))
+        wX = weights.view(x_shp[0], x_shp[2], 1) * X
+        # print("wX shape = {}".format(wX.shape))
+        XwX = torch.matmul(torch.transpose(X, 1, 2), wX)
+        # print("XwX shape = {}".format(XwX.shape))
+        
+        
+        # Recover essential matrix from self-adjoing eigen
+        e_hat = []
+        for i in range(x_shp[0]):
+          # e, vv = torch.eig(XwX[i],eigenvectors=True)
+          u, s, vv = torch.svd(XwX[i].cpu())
+          e_hat_this = u[:, -1]
+          # Make unit norm just in case
+          e_hat_this = e_hat_this / torch.norm(e_hat_this)
+          e_hat.append(e_hat_this)
+        
+        e_hat = torch.stack(e_hat).cuda()
+        
+        gt_geod_d = y_in[:, 0, :]
+        # tf.summary.histogram("gt_geod_d", gt_geod_d)
+
+        # Get groundtruth Essential matrix
+        e_gt_unnorm = torch.matmul(
+            torch_skew_symmetric(t_in).view(x_shp[0], 3, 3),
+            R_in.view(x_shp[0], 3, 3)
+        ).view(x_shp[0], 9)
+        e_gt = e_gt_unnorm / torch.norm(e_gt_unnorm, dim=1, \
+          keepdim=True).detach()
+        
+        # Essential matrix loss
+        essential_loss = torch.mean(torch.min(
+            torch.sum(torch.pow(e_hat - e_gt, 2), dim=1),
+            torch.sum(torch.pow(e_hat + e_gt, 2), dim=1)
+        ))
+
+        self.tensorboardX.add_scalars('essential_loss', 
+                      {'%s' % (mode):essential_loss}, self.global_step)
+        
+        # Classification loss
+        is_pos = (gt_geod_d < self.config.obj_geod_th).float()
+        
+        is_neg = (gt_geod_d >= self.config.obj_geod_th).float()
+
+        c = is_pos - is_neg
+        classif_losses = -torch.log(F.sigmoid(c * logits))
+
+        # balance
+        num_pos = F.relu(torch.sum(is_pos, dim=1) - 1.0) + 1.0
+        num_neg = F.relu(torch.sum(is_neg, dim=1) - 1.0) + 1.0
+        classif_loss_p = torch.sum(
+            classif_losses * is_pos, dim=1
+        )
+        classif_loss_n = torch.sum(
+            classif_losses * is_neg, dim=1
+        )
+        classif_loss = torch.mean(
+            classif_loss_p * 0.5 / num_pos +
+            classif_loss_n * 0.5 / num_neg
+        )
+        self.tensorboardX.add_scalars('classif_loss', 
+            {'%s' % (mode):classif_loss}, self.global_step)
+        self.tensorboardX.add_scalars('classif_loss_p', 
+            {'%s' % (mode):torch.mean(classif_loss_p * 0.5 / num_pos)}
+            , self.global_step)
+        self.tensorboardX.add_scalars('classif_loss_n', 
+            {'%s' % (mode):torch.mean(classif_loss_n * 0.5 / num_neg)}
+            , self.global_step)
+        
+        precision = torch.mean(
+            torch.sum((logits > 0).float() * is_pos, dim=1) /
+            torch.sum((logits > 0).float() *
+                          (is_pos + is_neg), dim=1)
+        )
+        self.tensorboardX.add_scalars('precision', 
+            {'%s' % (mode):precision}, self.global_step)
+        
+        recall = torch.mean(
+            torch.sum((logits > 0).float() * is_pos, dim=1) /
+            torch.sum(is_pos, dim=1)
+        )
+        self.tensorboardX.add_scalars('recall', 
+            {'%s' % (mode):recall}, self.global_step)
+        
+
+        # Check global_step and add essential loss
+        loss = 0
+        if self.config.loss_essential > 0:
+            loss += (
+                self.config.loss_essential * essential_loss * 
+                (self.global_step >= self.config.loss_essential_init_iter))
+        if self.config.loss_classif > 0:
+            loss += self.config.loss_classif * classif_loss
+        
+        self.tensorboardX.add_scalars('loss', 
+            {'%s' % (mode):loss}, self.global_step)
+
+        
+        if mode == 'train':
+          if not torch.isnan(loss).any():
+            loss.backward()
+          
+            torch.nn.utils.clip_grad_norm_(self.net.parameters(), 
+                                          self.config.GRAD_CLIP)
+            self.optimizer.step()
+            self.logger_loss.update(loss.data, x_shp[0])
+            
+        
+        suffix = f"| loss {self.logger_loss.avg:.6f}"
+      
+        # ----------------------------------------
+        # Validation
+        if self.global_step % self.config.val_intv == 0: 
+          pass
+
+        summary = {'suffix':suffix}
+        self.global_step+=1
+      
+      if self.speed_benchmark:
+        self.time_per_step.update(time.time()-step_start,1)
+        print(f"time elapse per step: {self.time_per_step.avg}")
+      
+      
+      bar.suffix=f"train: [{epoch}][{i}/{len(data_loader)}] \
+        | Total: {bar.elapsed_td:} | ETA: {bar.eta_td:} {summary['suffix']}"
+      bar.next()
+      bar.finish()
+
+  def val(self, data_loader, epoch):
     
-    if self.speed_benchmark:
-      self.time_per_step.update(time.time()-step_start,1)
-      print(f"time elapse per step: {self.time_per_step.avg}")
-    return dotdict(summary)
+    va_res = 0
+    cur_global_step = self.global_step
+    va_res, summary_t = test_process(self.net,
+        "valid", 
+        data_loader,
+        self.res_dir_va, self.config, True)
+    for entry in summary_t:
+      self.tensorboardX.add_scalars(entry['tag'], 
+          {'val': entry['val']}, self.global_step)
+    # Higher the better
+    
+    if va_res > self.best_va_res:
+      print(
+          "Saving best model with va_res = {}".format(
+              va_res))
+      self.best_va_res = va_res
+      # Save best validation result
+      with open(self.va_res_file, "w") as ofp:
+          ofp.write("{:e}\n".format(self.best_va_res))
+      # Save best model
+      cprint('save best model: %s' % epoch, 'yellow')
+      self._save_checkpoint(
+          self.net, self.optimizer,
+          os.path.join(self.config.EXP_DIR, 
+                      'best_checkpoint_G.pth.tar'),
+          do_cleaning = False, epoch = epoch)
+      
 
 def main():
   # parse arguments, build exp dir

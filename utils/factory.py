@@ -1,9 +1,10 @@
-from .callbacks import PeriodicCallback, OnceCallback, 
+from .callbacks import PeriodicCallback, OnceCallback, \
     ScheduledCallback,CallbackLoc
 import numpy as np
 from progress.bar import Bar
 import time
 from .dotdict import *
+
 
 class trainer(object):
   def __init__(self, model,train_loader=None,
@@ -19,10 +20,7 @@ class trainer(object):
     self.callbacks=[]
     self.context={}
     self.step = 0
-    self.epoch = self.model.epochStart
-    self.tr_te_ratio = 5 # train/test ratio
-    self.t_tr  = 5 # time (min) for each training
-    self.testDuration   = self.t_train/self.tr_te_ratio
+    self.epoch = self.model.epoch_on_start
     self.trainTimer     = 0
     self.testTimer      = 0
 
@@ -83,32 +81,11 @@ class trainer(object):
         
         # train
         if self.train_loader is not None:
-          self.model.set_mode('train')
-          bar = Bar('train Progress', max=len(self.train_loader))
-          self.trainTimer=time.time()
-          for i, data in enumerate(self.train_loader):
-            if self.timeElaps(self.trainTimer) > self.trainDuration: 
-              break
-            summary=self.model.step(dotdict(data),'train')
-            bar.suffix=f"train: [{self.epoch}][{i}/{len(self.train_loader)}] 
-              | Total: {bar.elapsed_td:} | ETA: {bar.eta_td:} {summary['suffix']}"
-            bar.next()
-          bar.finish()
-
+          self.model.train(self.train_loader, self.epoch)
 
         # val
         if self.val_loader is not None:
-          self.model.set_mode('val')
-          bar = Bar('val Progress', max=len(self.val_loader))
-          self.testTimer=time.time()
-          for i, data in enumerate(self.val_loader):
-            if self.timeElaps(self.testTimer) > self.testDuration: 
-              break
-            summary=self.model.step(dotdict(data),'val')
-            bar.suffix=f"val: [{self.epoch}][{i}/{len(self.val_loader)}] 
-              | Total: {bar.elapsed_td:} | ETA: {bar.eta_td:} {summary['suffix']}"
-            bar.next()
-          bar.finish()
+          self.model.val(self.val_loader, self.epoch)
 
           # periodic callbacks at epoch end
           for cb in self._periodic_callbacks:

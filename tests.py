@@ -34,14 +34,14 @@ import datetime
 import os
 import sys
 import time
-
+import torch
 import numpy as np
 from parse import parse
 
 import cv2
 from six.moves import xrange
 from transformations import quaternion_from_matrix
-from utils import loadh5, saveh5
+from helper import loadh5, saveh5
 from utils.routines import v, npy
 import torch.nn.functional as F
 
@@ -136,7 +136,6 @@ def ourFindEssentialMat(np1, np2, method=cv2.RANSAC, iter_num=1000,
 def evaluate_R_t(R_gt, t_gt, R, t, q_gt=None):
 
     # from Utils.transformations import quaternion_from_matrix
-
     t = t.flatten()
     t_gt = t_gt.flatten()
 
@@ -370,322 +369,317 @@ def dump_val_res(img1, img2, x1, x2, mask_before, mask_after, cx1, cy1, f1,
 
 
 def test_process(net, mode, 
-                 x, y, R, t,
-                 img1, img2, r,
-                 logits_mean, e_hat, loss,
                  data_loader,
                  res_dir, config, va_res_only=False):
 
-    import ipdb;ipdb.set_trace()
-    time_us = []
-    time_ransac_us = []
-    time_ransac = []
+    with torch.set_grad_enabled(False):
+      time_us = []
+      time_ransac_us = []
+      time_ransac = []
 
-    inlier_us = []
-    inlier_ransac = []
-    inlier_ransac_us = []
+      inlier_us = []
+      inlier_ransac = []
+      inlier_ransac_us = []
 
-    if mode == "test":
-        print("[{}] {}: Start testing".format(config.data_tr, time.asctime()))
+      if mode == "test":
+          print("[{}] {}: Start testing".format(config.data_tr, time.asctime()))
 
-    # Unpack some references
-    """
-    xs = data["xs"]
-    ys = data["ys"]
-    Rs = data["Rs"]
-    ts = data["ts"]
-    img1s = data["img1s"]
-    cx1s = data["cx1s"]
-    cy1s = data["cy1s"]
-    f1s = data["f1s"]
-    img2s = data["img2s"]
-    cx2s = data["cx2s"]
-    cy2s = data["cy2s"]
-    f2s = data["f2s"]
-    """
+      # Unpack some references
+      """
+      xs = data["xs"]
+      ys = data["ys"]
+      Rs = data["Rs"]
+      ts = data["ts"]
+      img1s = data["img1s"]
+      cx1s = data["cx1s"]
+      cy1s = data["cy1s"]
+      f1s = data["f1s"]
+      img2s = data["img2s"]
+      cx2s = data["cx2s"]
+      cy2s = data["cy2s"]
+      f2s = data["f2s"]
+      """
 
-    # Validation
-    num_sample = len(data_loader)
+      # Validation
+      num_sample = len(data_loader)
 
-    test_list = []
-    if va_res_only:
-        test_list += [
-            "ours",
-        ]
-    else:
-        test_list += [
-            "ours_ransac",
-            # "ours_usac5point",
-            # "ours_usac8point",
-            # "ours_usacnolo5point",
-            # "ours_usacnolo8point",
-            # "ours_ransac_weighted",
-            # "ours_8point",
-            # "ours_top64_ransac",
-            # "ours_prob_ransac",
-            # "ours_prob_ransac_weighted",
-            # "ours_prob_mlesac",
-            # "ours_prob_mlesac_weighted",
-        ]
+      test_list = []
+      if va_res_only:
+          test_list += [
+              "ours",
+          ]
+      else:
+          test_list += [
+              "ours_ransac",
+              # "ours_usac5point",
+              # "ours_usac8point",
+              # "ours_usacnolo5point",
+              # "ours_usacnolo8point",
+              # "ours_ransac_weighted",
+              # "ours_8point",
+              # "ours_top64_ransac",
+              # "ours_prob_ransac",
+              # "ours_prob_ransac_weighted",
+              # "ours_prob_mlesac",
+              # "ours_prob_mlesac_weighted",
+          ]
 
-    eval_res = {}
-    measure_list = ["err_q", "err_t", "num"]
-    for measure in measure_list:
-        eval_res[measure] = {}
-        for _test in test_list:
-            eval_res[measure][_test] = np.zeros(num_sample)
+      eval_res = {}
+      measure_list = ["err_q", "err_t", "num"]
+      for measure in measure_list:
+          eval_res[measure] = {}
+          for _test in test_list:
+              eval_res[measure][_test] = np.zeros(num_sample)
 
-    e_hats = []
-    y_hats = []
-    # Run every test independently. might have different number of keypoints
-    for idx_cur in xrange(num_sample):
-        # Use minimum kp in batch to construct the batch
-        import ipdb;ipdb.set_trace()
-        data = data_loader.__getitem__(idx_cur)
-        _xs = v(data.xs)
-        _ys = v(data.ys)
-        _dR = v(data.Rs)
-        _dt = v(data.ts)
+      e_hats = []
+      y_hats = []
+      # Run every test independently. might have different number of keypoints
+      for idx_cur in xrange(num_sample):
+          if idx_cur > 10: break
+          # Use minimum kp in batch to construct the batch
+          data = data_loader.dataset.__getitem__(idx_cur)
+          _xs = v(data.xs)
+          _ys = v(data.ys)
+          _dR = v(data.Rs)
+          _dt = v(data.ts)
 
-        time_start = datetime.datetime.now()
-        x_shp = _xs.shape
-        logits = net(_xs)
-        logits = logits.view(x_shp[0], -1)
-        weights = F.relu(F.tanh(logits))
+          time_start = datetime.datetime.now()
+          x_shp = _xs.shape
+          logits = net(_xs)
+          logits = logits.view(x_shp[0], -1)
+          weights = F.relu(F.tanh(logits))
 
-        # Make input data (num_img_pair x num_corr x 4)
-        
-        xx = x_in
-        # Create the matrix to be used for the eight-point algorithm
-        
-        X = torch.transpose(torch.stack([
-            xx[:, 2] * xx[:, 0], xx[:, 2] * xx[:, 1], xx[:, 2],
-            xx[:, 3] * xx[:, 0], xx[:, 3] * xx[:, 1], xx[:, 3],
-            xx[:, 0], xx[:, 1], torch.ones_like(xx[:, 0])
-        ], dim=1), 1, 2)
+          # Make input data (num_img_pair x num_corr x 4)
+          
+          xx = _xs
+          # Create the matrix to be used for the eight-point algorithm
+          
+          X = torch.transpose(torch.stack([
+              xx[:, 2] * xx[:, 0], xx[:, 2] * xx[:, 1], xx[:, 2],
+              xx[:, 3] * xx[:, 0], xx[:, 3] * xx[:, 1], xx[:, 3],
+              xx[:, 0], xx[:, 1], torch.ones_like(xx[:, 0])
+          ], dim=1), 1, 2)
 
-        print("X shape = {}".format(X.shape))
-        wX = weights.view(x_shp[0], x_shp[2], 1) * X
-        print("wX shape = {}".format(wX.shape))
-        XwX = torch.matmul(torch.transpose(X, 1, 2), wX)
-        print("XwX shape = {}".format(XwX.shape))
-        
-        
-        # Recover essential matrix from self-adjoing eigen
-        e_hat = []
-        for i in range(x_shp[0]):
-          # e, vv = torch.eig(XwX[i],eigenvectors=True)
-          u, s, vv = torch.svd(XwX[i].cpu())
-          e_hat_this = u[:, -1]
-          # Make unit norm just in case
-          e_hat_this = e_hat_this / torch.norm(e_hat_this)
-          e_hat.append(e_hat_this)
-        
-        e_hat = torch.stack(e_hat).cuda()
-        
-        time_end = datetime.datetime.now()
-        time_diff = time_end - time_start
-        # print("Runtime in milliseconds: {}".format(
-        #     float(time_diff.total_seconds() * 1000.0)
-        # ))
-        time_us += [time_diff.total_seconds() * 1000.0]
+          wX = weights.view(x_shp[0], x_shp[2], 1) * X
+          XwX = torch.matmul(torch.transpose(X, 1, 2), wX)
+          
+          
+          # Recover essential matrix from self-adjoing eigen
+          e_hat = []
+          for i in range(x_shp[0]):
+            # e, vv = torch.eig(XwX[i],eigenvectors=True)
+            u, s, vv = torch.svd(XwX[i].cpu())
+            e_hat_this = u[:, -1]
+            # Make unit norm just in case
+            e_hat_this = e_hat_this / torch.norm(e_hat_this)
+            e_hat.append(e_hat_this)
+          
+          e_hat = torch.stack(e_hat).cuda()
+          
+          time_end = datetime.datetime.now()
+          time_diff = time_end - time_start
+          # print("Runtime in milliseconds: {}".format(
+          #     float(time_diff.total_seconds() * 1000.0)
+          # ))
+          time_us += [time_diff.total_seconds() * 1000.0]
 
-        e_hats.append(npy(e_hat))
-        y_hats.append(npy(logits))
+          e_hats.append(npy(e_hat))
+          y_hats.append(npy(logits))
 
-    import ipdb;ipdb.set_trace()
-    for cur_val_idx in xrange(num_sample):
-        data = data_loader.__getitem__(cur_val_idx)
-        _xs = v(data.xs)
-        _ys = v(data.ys)
-        _dR = v(data.Rs)
-        _dt = v(data.ts)
-        e_hat_out = e_hats[cur_val_idx].flatten()
-        y_hat_out = y_hats[cur_val_idx].flatten()
+      for cur_val_idx in xrange(num_sample):
+          if cur_val_idx > 10: break
+          data = data_loader.dataset.__getitem__(cur_val_idx)
+          _xs = data.xs
+          _ys = data.ys
+          _dR = data.Rs.reshape(3,3)
+          _dt = data.ts.reshape(3)
+          e_hat_out = e_hats[cur_val_idx].flatten()
+          y_hat_out = y_hats[cur_val_idx].flatten()
 
-        # x coordinates
-        _x1 = _xs[:2, :]
-        _x2 = _xs[2:, :]
-        # current validity from network
-        _valid = y_hat_out.flatten()
-        # choose top ones (get validity threshold)
-        _valid_th = np.sort(_valid)[::-1][config.obj_top_k]
-        _relu_tanh = np.maximum(0, np.tanh(_valid))
+          # x coordinates
+          _x1 = _xs[0, :2, :].T
+          _x2 = _xs[0, 2:, :].T
+          # current validity from network
+          _valid = y_hat_out.flatten()
+          # choose top ones (get validity threshold)
+          _valid_th = np.sort(_valid)[::-1][config.obj_top_k]
+          _relu_tanh = np.maximum(0, np.tanh(_valid))
+          
+          # For every things to test
+          _use_prob = True
+          for _test in test_list:
+              if _test == "ours":
+                  _eval_func = "non-decompose"
+                  _mask_before = _valid >= max(0, _valid_th)
+                  _method = None
+                  _probs = None
+                  _weighted = False
+              elif _test == "ours_ransac":
+                  _eval_func = "decompose"
+                  _mask_before = _valid >= max(0, _valid_th)
+                  _method = cv2.RANSAC
+                  _probs = None
+                  _weighted = False
 
-        # For every things to test
-        _use_prob = True
-        for _test in test_list:
-            if _test == "ours":
-                _eval_func = "non-decompose"
-                _mask_before = _valid >= max(0, _valid_th)
-                _method = None
-                _probs = None
-                _weighted = False
-            elif _test == "ours_ransac":
-                _eval_func = "decompose"
-                _mask_before = _valid >= max(0, _valid_th)
-                _method = cv2.RANSAC
-                _probs = None
-                _weighted = False
-
-            if _eval_func == "non-decompose":
-                _err_q, _err_t, _, _, _num_inlier, \
+              if _eval_func == "non-decompose":
+                  _err_q, _err_t, _, _, _num_inlier, \
                     _ = eval_nondecompose(
                         _x1, _x2, e_hat_out, _dR, _dt, y_hat_out)
-                _mask_after = _mask_before
-            elif _eval_func == "decompose":
-                # print("RANSAC loop with ours")
-                time_start = datetime.datetime.now()
-                _err_q, _err_t, _, _, _num_inlier, \
-                    _mask_after = eval_decompose(
-                        _x1, _x2, _dR, _dt, mask=_mask_before,
-                        method=_method, probs=_probs,
-                        weighted=_weighted, use_prob=_use_prob)
-                time_end = datetime.datetime.now()
-                time_diff = time_end - time_start
-                # print("Runtime in milliseconds: {}".format(
-                #     float(time_diff.total_seconds() * 1000.0)
-                # ))
-                # print("RANSAC loop without ours")
-                inlier_us += [np.sum(_mask_before)]
-                inlier_ransac_us += [np.sum(_mask_after)]
-                time_ransac_us += [time_diff.total_seconds() * 1000.0]
-                time_start = datetime.datetime.now()
-                _, _, _, _, _, \
-                    _mask_tmp = eval_decompose(
-                        _x1, _x2, _dR, _dt,
-                        mask=np.ones_like(_mask_before).astype(bool),
-                        method=_method, probs=_probs,
-                        weighted=_weighted, use_prob=_use_prob)
-                time_end = datetime.datetime.now()
-                time_diff = time_end - time_start
-                inlier_ransac += [np.sum(_mask_tmp)]
-                # print("Runtime in milliseconds: {}".format(
-                #     float(time_diff.total_seconds() * 1000.0)
-                # ))
-                time_ransac += [time_diff.total_seconds() * 1000.0]
+                  _mask_after = _mask_before
+              elif _eval_func == "decompose":
+                  # print("RANSAC loop with ours")
+                  time_start = datetime.datetime.now()
+                  _err_q, _err_t, _, _, _num_inlier, \
+                      _mask_after = eval_decompose(
+                          _x1, _x2, _dR, _dt, mask=_mask_before,
+                          method=_method, probs=_probs,
+                          weighted=_weighted, use_prob=_use_prob)
+                  time_end = datetime.datetime.now()
+                  time_diff = time_end - time_start
+                  # print("Runtime in milliseconds: {}".format(
+                  #     float(time_diff.total_seconds() * 1000.0)
+                  # ))
+                  # print("RANSAC loop without ours")
+                  inlier_us += [np.sum(_mask_before)]
+                  inlier_ransac_us += [np.sum(_mask_after)]
+                  time_ransac_us += [time_diff.total_seconds() * 1000.0]
+                  time_start = datetime.datetime.now()
+                  _, _, _, _, _, \
+                      _mask_tmp = eval_decompose(
+                          _x1, _x2, _dR, _dt,
+                          mask=np.ones_like(_mask_before).astype(bool),
+                          method=_method, probs=_probs,
+                          weighted=_weighted, use_prob=_use_prob)
+                  time_end = datetime.datetime.now()
+                  time_diff = time_end - time_start
+                  inlier_ransac += [np.sum(_mask_tmp)]
+                  # print("Runtime in milliseconds: {}".format(
+                  #     float(time_diff.total_seconds() * 1000.0)
+                  # ))
+                  time_ransac += [time_diff.total_seconds() * 1000.0]
 
-            # Load them in list
-            eval_res["err_q"][_test][cur_val_idx] = _err_q
-            eval_res["err_t"][_test][cur_val_idx] = _err_t
-            eval_res["num"][_test][cur_val_idx] = _num_inlier
+              # Load them in list
+              eval_res["err_q"][_test][cur_val_idx] = _err_q
+              eval_res["err_t"][_test][cur_val_idx] = _err_t
+              eval_res["num"][_test][cur_val_idx] = _num_inlier
 
-            if config.vis_dump:
-                dump_val_res(
-                    img1s[cur_val_idx],
-                    img2s[cur_val_idx],
-                    _x1, _x2, _mask_before, _mask_after,
-                    cx1s[cur_val_idx],
-                    cy1s[cur_val_idx],
-                    f1s[cur_val_idx],
-                    cx2s[cur_val_idx],
-                    cy2s[cur_val_idx],
-                    f2s[cur_val_idx],
-                    Rs[cur_val_idx],
-                    ts[cur_val_idx],
-                    os.path.join(
-                        res_dir, mode, "match", _test,
-                        "pair{:08d}".format(cur_val_idx)
-                    ),
-                )
+              if config.vis_dump:
+                  dump_val_res(
+                      img1s[cur_val_idx],
+                      img2s[cur_val_idx],
+                      _x1, _x2, _mask_before, _mask_after,
+                      cx1s[cur_val_idx],
+                      cy1s[cur_val_idx],
+                      f1s[cur_val_idx],
+                      cx2s[cur_val_idx],
+                      cy2s[cur_val_idx],
+                      f2s[cur_val_idx],
+                      Rs[cur_val_idx],
+                      ts[cur_val_idx],
+                      os.path.join(
+                          res_dir, mode, "match", _test,
+                          "pair{:08d}".format(cur_val_idx)
+                      ),
+                  )
 
-        # print("Test {}".format(_test))
-        # print("Time taken to compute us {}".format(np.median(time_us)))
-        # print("Time taken to compute ransac {}".format(np.median(time_ransac)))
-        # print("Time taken to compute ransac after us {}".format(
-        #     np.median(time_ransac_us)))
-        # print("Inliers us {}".format(np.median(inlier_us)))
-        # print("Inliers ransac {}".format(np.median(inlier_ransac)))
-        # print("Inliers ransac + us {}".format(np.median(inlier_ransac_us)))
+          # print("Test {}".format(_test))
+          # print("Time taken to compute us {}".format(np.median(time_us)))
+          # print("Time taken to compute ransac {}".format(np.median(time_ransac)))
+          # print("Time taken to compute ransac after us {}".format(
+          #     np.median(time_ransac_us)))
+          # print("Inliers us {}".format(np.median(inlier_us)))
+          # print("Inliers ransac {}".format(np.median(inlier_ransac)))
+          # print("Inliers ransac + us {}".format(np.median(inlier_ransac_us)))
+      
+      if config.vis_dump:
+          print("[{}] {}: End dumping".format(
+              config.data_tr, time.asctime()))
+          assert config.run_mode != "train"
+          return np.nan
 
-    if config.vis_dump:
-        print("[{}] {}: End dumping".format(
-            config.data_tr, time.asctime()))
-        assert config.run_mode != "train"
-        return np.nan
+      summaries = []
+      ret_val = 0
+      for _tag in test_list:
+          for _sub_tag in measure_list:
+              summaries.append(
+                  {
+                      'tag':"ErrorComputation/" + _tag, \
+                      'val':np.median(eval_res[_sub_tag][_tag])
+                  }
+              )
 
-    summaries = []
-    ret_val = 0
-    for _tag in test_list:
-        for _sub_tag in measure_list:
-            summaries.append(
-                {
-                    'tag':"ErrorComputation/" + _tag,
-                    'val':simple_value=np.median(eval_res[_sub_tag][_tag])
-                }
-            )
+              # For median error
+              ofn = os.path.join(
+                  res_dir, "median_{}_{}.txt".format(_sub_tag, _tag))
+              with open(ofn, "w") as ofp:
+                  ofp.write("{}\n".format(
+                      np.median(eval_res[_sub_tag][_tag])))
 
-            # For median error
-            ofn = os.path.join(
-                res_dir, mode, "median_{}_{}.txt".format(_sub_tag, _tag))
-            with open(ofn, "w") as ofp:
-                ofp.write("{}\n".format(
-                    np.median(eval_res[_sub_tag][_tag])))
+          
+          ths = np.arange(7) * 5
+          cur_err_q = np.array(eval_res["err_q"][_tag]) * 180.0 / np.pi
+          cur_err_t = np.array(eval_res["err_t"][_tag]) * 180.0 / np.pi
+          # Get histogram
+          q_acc_hist, _ = np.histogram(cur_err_q, ths)
+          t_acc_hist, _ = np.histogram(cur_err_t, ths)
+          qt_acc_hist, _ = np.histogram(np.maximum(cur_err_q, cur_err_t), ths)
+          num_pair = float(len(cur_err_q))
+          q_acc_hist = q_acc_hist.astype(float) / num_pair
+          t_acc_hist = t_acc_hist.astype(float) / num_pair
+          qt_acc_hist = qt_acc_hist.astype(float) / num_pair
+          q_acc = np.cumsum(q_acc_hist)
+          t_acc = np.cumsum(t_acc_hist)
+          qt_acc = np.cumsum(qt_acc_hist)
+          # Store return val
+          if _tag == "ours":
+              ret_val = np.mean(qt_acc[:4])  # 1 == 5
+          for _idx_th in xrange(1, len(ths)):
+              summaries += [
+                  {
+                      'tag':"ErrorComputation/acc_q_auc{}_{}".format(
+                          ths[_idx_th], _tag),  \
+                      'val':np.mean(q_acc[:_idx_th])
+                  }
+              ]
+              summaries += [
+                  {
+                      'tag':"ErrorComputation/acc_t_auc{}_{}".format(
+                          ths[_idx_th],_tag),  \
+                      'val':np.mean(t_acc[:_idx_th])
+                  }
+              ]
+              summaries += [
+                  {
+                      'tag':"ErrorComputation/acc_qt_auc{}_{}".format(
+                          ths[_idx_th], _tag),  \
+                      'val':np.mean(qt_acc[:_idx_th])
+                  }
+              ]
+              # for q_auc
+              ofn = os.path.join(
+                  res_dir,
+                  "acc_q_auc{}_{}.txt".format(ths[_idx_th], _tag))
+              with open(ofn, "w") as ofp:
+                  ofp.write("{}\n".format(np.mean(q_acc[:_idx_th])))
+              # for qt_auc
+              ofn = os.path.join(
+                  res_dir,
+                  "acc_t_auc{}_{}.txt".format(ths[_idx_th], _tag))
+              with open(ofn, "w") as ofp:
+                  ofp.write("{}\n".format(np.mean(t_acc[:_idx_th])))
+              # for qt_auc
+              ofn = os.path.join(
+                  res_dir,
+                  "acc_qt_auc{}_{}.txt".format(ths[_idx_th], _tag))
+              with open(ofn, "w") as ofp:
+                  ofp.write("{}\n".format(np.mean(qt_acc[:_idx_th])))
 
-        ths = np.arange(7) * 5
-        cur_err_q = np.array(eval_res["err_q"][_tag]) * 180.0 / np.pi
-        cur_err_t = np.array(eval_res["err_t"][_tag]) * 180.0 / np.pi
-        # Get histogram
-        q_acc_hist, _ = np.histogram(cur_err_q, ths)
-        t_acc_hist, _ = np.histogram(cur_err_t, ths)
-        qt_acc_hist, _ = np.histogram(np.maximum(cur_err_q, cur_err_t), ths)
-        num_pair = float(len(cur_err_q))
-        q_acc_hist = q_acc_hist.astype(float) / num_pair
-        t_acc_hist = t_acc_hist.astype(float) / num_pair
-        qt_acc_hist = qt_acc_hist.astype(float) / num_pair
-        q_acc = np.cumsum(q_acc_hist)
-        t_acc = np.cumsum(t_acc_hist)
-        qt_acc = np.cumsum(qt_acc_hist)
-        # Store return val
-        if _tag == "ours":
-            ret_val = np.mean(qt_acc[:4])  # 1 == 5
-        for _idx_th in xrange(1, len(ths)):
-            summaries += [
-                {
-                    'tag':"ErrorComputation/acc_q_auc{}_{}".format(
-                        ths[_idx_th], _tag),
-                    'val':simple_value=np.mean(q_acc[:_idx_th])
-                }
-            ]
-            summaries += [
-                {
-                    'tag':"ErrorComputation/acc_t_auc{}_{}".format(
-                        ths[_idx_th], _tag),
-                    'val':simple_value=np.mean(t_acc[:_idx_th])
-                }
-            ]
-            summaries += [
-                {
-                    'tag':"ErrorComputation/acc_qt_auc{}_{}".format(
-                        ths[_idx_th], _tag),
-                    'val':simple_value=np.mean(qt_acc[:_idx_th])
-                }
-            ]
-            # for q_auc
-            ofn = os.path.join(
-                res_dir, mode,
-                "acc_q_auc{}_{}.txt".format(ths[_idx_th], _tag))
-            with open(ofn, "w") as ofp:
-                ofp.write("{}\n".format(np.mean(q_acc[:_idx_th])))
-            # for qt_auc
-            ofn = os.path.join(
-                res_dir, mode,
-                "acc_t_auc{}_{}.txt".format(ths[_idx_th], _tag))
-            with open(ofn, "w") as ofp:
-                ofp.write("{}\n".format(np.mean(t_acc[:_idx_th])))
-            # for qt_auc
-            ofn = os.path.join(
-                res_dir, mode,
-                "acc_qt_auc{}_{}.txt".format(ths[_idx_th], _tag))
-            with open(ofn, "w") as ofp:
-                ofp.write("{}\n".format(np.mean(qt_acc[:_idx_th])))
+      if mode == "test":
+          print("[{}] {}: End testing".format(
+              config.data_tr, time.asctime()))
 
-    if mode == "test":
-        print("[{}] {}: End testing".format(
-            config.data_tr, time.asctime()))
-
-    # Return qt_auc20 of ours
-    return ret_val, summaries
+      # Return qt_auc20 of ours
+      return ret_val, summaries
 
 
 def comp_process(mode, data, res_dir, config):

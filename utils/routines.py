@@ -5,6 +5,7 @@ import shutil
 import torch
 import collections
 import sys
+import time
 if sys.version_info[0] == 2:
   import Queue as queue
   string_classes = basestring
@@ -46,13 +47,34 @@ def get_latest_model(path, identifier):
   models = [models[i] for i in ind]
   return models[-1]
 
-
+class timer(object):
+  def __init__(self, length):
+    self.length = length
+    self.start = time.time()
+  def reset(self):
+    self.start = time.time()
+  def should_stop(self):
+    if (time.time() - self.start) / 60. > self.length:
+      return True
+    return False
 
 def worker_init_fn(worker_id):                                                          
     np.random.seed(np.random.get_state()[1][0] + worker_id)
     
 def collate_fn_cat(batch):
   "Puts each data field into a tensor with outer dimension batch size"
+  
+  # truncate first since the each example in the batch 
+  # may have different length
+  if type(batch[0]).__name__ == 'Record':
+    n = len(batch)
+    length = np.array([batch[i].xs.shape[2] for i in range(n)])
+    if np.any(length != length[0]):
+      min_len = np.min(length)
+      keys = batch[0].__dict__.keys()
+      for i in range(n):
+        batch[i].xs = batch[i].xs[:,:,:min_len]
+        batch[i].ys = batch[i].ys[:,:,:min_len]
   
   if torch.is_tensor(batch[0]):
     out = None

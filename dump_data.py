@@ -48,7 +48,7 @@ from config import get_config
 from data import loadFromDir
 from geom import get_episqr, get_episym, get_sampsons, parse_geom
 from six.moves import xrange
-from utils import loadh5, saveh5
+from helper import loadh5, saveh5
 
 eps = 1e-10
 use3d = False
